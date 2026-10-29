@@ -1,0 +1,63 @@
+name: Prepare upstream tree
+description: >-
+  Check out upstream GridCraft (./upstream) and craft-fonts (./craft-fonts) next to this repository and,
+  optionally, apply every patch in patches/ to the upstream tree. Run actions/checkout on this repository first.
+
+inputs:
+  upstream-repo:
+    description: Upstream GitHub repository, owner/name.
+    required: true
+  upstream-ref:
+    description: Commit, tag or branch of the upstream repository.
+    required: true
+  craft-fonts-ref:
+    description: storytold/craft-fonts commit that upstream's own CI pins for this upstream ref.
+    required: true
+  apply-patches:
+    description: "'true' to apply patches/*.patch to the upstream tree, 'false' for a plain upstream build."
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    # The Windows runner defaults to autocrlf=true, which would rewrite upstream's files and break git apply.
+    - name: Keep line endings as committed
+      shell: bash
+      run: git config --global core.autocrlf false
+
+    - name: Check out upstream
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.upstream-repo }}
+        ref: ${{ inputs.upstream-ref }}
+        path: upstream
+        persist-credentials: false
+
+    # Optional build input upstream ships its releases with; CI and releases require it (CRAFT_FONTS_REQUIRED=1).
+    - name: Check out craft-fonts
+      uses: actions/checkout@v4
+      with:
+        repository: storytold/craft-fonts
+        ref: ${{ inputs.craft-fonts-ref }}
+        path: craft-fonts
+        persist-credentials: false
+
+    - name: Apply patches
+      if: inputs.apply-patches == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+        patches=("$GITHUB_WORKSPACE"/patches/*.patch)
+        if [ "${#patches[@]}" -eq 0 ]; then
+          echo "::error::patches/ holds no .patch file"
+          exit 1
+        fi
+        cd upstream
+        for p in "${patches[@]}"; do
+          echo "::group::$(basename "$p")"
+          git apply --check --verbose "$p"
+          git apply --verbose "$p"
+          echo "::endgroup::"
+        done
+        git --no-pager diff --stat

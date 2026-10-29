@@ -1,0 +1,5 @@
+# Patches must keep their exact bytes (LF), whatever core.autocrlf says on the machine that checks them out.
+*.patch -text
+*.yml   text eol=lf
+*.py    text eol=lf
+*.png   binary

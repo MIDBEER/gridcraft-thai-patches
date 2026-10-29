@@ -1,0 +1,73 @@
+name: Upstream gate
+
+# Runs upstream's own quality gate (`cargo xtask ci`: fmt --check, clippy -D warnings, tests, doctests, assets,
+# layers, wasm check) on Linux, the same job upstream's CI runs on a pull request, with the patches applied. A
+# patch should pass this before it is sent upstream (AGENTS.md). Started by hand: it takes a while.
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: Upstream commit, tag or branch (empty = the commit the patches were written against)
+        type: string
+        default: ""
+      apply_patches:
+        description: Apply patches/*.patch first (untick to see whether upstream itself is green)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPO: storytold/gridcraft
+  UPSTREAM_REF: ${{ inputs.upstream_ref || '11bb67386c9bb19b0717e21e98adc608162ae2e5' }}
+  # Same craft-fonts commit as upstream's ci.yml, so the gate tests the fonts that ship.
+  CRAFT_FONTS_REF: b076417b5880bd4154bd22f00695b1d28c6bea83
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+      CRAFT_FONTS_REQUIRED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/prepare-upstream
+        with:
+          upstream-repo: ${{ env.UPSTREAM_REPO }}
+          upstream-ref: ${{ env.UPSTREAM_REF }}
+          craft-fonts-ref: ${{ env.CRAFT_FONTS_REF }}
+          apply-patches: ${{ inputs.apply_patches }}
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      # The package list is the one in upstream's ci.yml.
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libgtk-3-dev libfontconfig1-dev libfreetype-dev mesa-vulkan-drivers
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@nextest
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: upstream
+          shared-key: linux-gate
+      - name: cargo xtask ci
+        working-directory: upstream
+        run: cargo xtask ci
+      - name: Cargo.lock unchanged
+        working-directory: upstream
+        run: git diff --exit-code -- Cargo.lock

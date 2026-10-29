@@ -1,0 +1,74 @@
+diff --git a/crates/ui-egui/src/theme/font_fallback.rs b/crates/ui-egui/src/theme/font_fallback.rs
+index 940a871..4b86e4f 100644
+--- a/crates/ui-egui/src/theme/font_fallback.rs
++++ b/crates/ui-egui/src/theme/font_fallback.rs
+@@ -20,7 +20,14 @@ pub(super) fn load_fallback(fonts: &mut FontDefinitions, han: HanOrder) -> Vec<S
+             if loaded.contains(path) {
+                 break; // a face loaded for an earlier script already covers this one
+             }
+-            if let Some(fd) = try_load(&[(path.as_str(), *index)]) {
++            if let Some(mut fd) = try_load(&[(path.as_str(), *index)]) {
++                // A script face carries running text, so its glyphs share the baseline of the face
++                // they interrupt. epaint centres a fallback's row box by default, which suits icons
++                // but leaves Latin digits floating above the Thai, Hebrew or CJK around them (#502,
++                // #1265). The symbol faces draw glyphs that fill their row, so they stay centred.
++                if !key.starts_with("sys-symbols") {
++                    fd.tweak.set_baseline_fallback(true);
++                }
+                 fonts.font_data.insert(key.to_string(), Arc::new(fd));
+                 keys.push(key.to_string());
+                 loaded.push(path.clone());
+diff --git a/crates/ui-egui/src/theme/font_setup.rs b/crates/ui-egui/src/theme/font_setup.rs
+index 749079e..92dd1e4 100644
+--- a/crates/ui-egui/src/theme/font_setup.rs
++++ b/crates/ui-egui/src/theme/font_setup.rs
+@@ -189,7 +189,13 @@ pub(super) fn craft_font_faces() -> Vec<(String, &'static CraftFont)> {
+ fn add_craft_fonts(fonts: &mut FontDefinitions) -> Vec<String> {
+     let mut keys = Vec::new();
+     for (key, font) in craft_font_faces() {
+-        fonts.font_data.insert(key.clone(), Arc::new(FontData::from_static(font.bytes)));
++        let mut data = FontData::from_static(font.bytes);
++        // Script faces share the baseline of the face they interrupt (see `load_fallback`); only
++        // the symbol faces (`Zsym`) fill their row and stay centred.
++        if !font.scripts.contains(&"Zsym") {
++            data.tweak.set_baseline_fallback(true);
++        }
++        fonts.font_data.insert(key.clone(), Arc::new(data));
+         keys.push(key);
+     }
+     keys
+diff --git a/crates/ui-egui/src/theme/tests.rs b/crates/ui-egui/src/theme/tests.rs
+index b8ad441..2d0908d 100644
+--- a/crates/ui-egui/src/theme/tests.rs
++++ b/crates/ui-egui/src/theme/tests.rs
+@@ -116,6 +116,30 @@ fn interface_families_fall_back_to_the_cell_font() {
+     }
+ }
+ 
++#[test]
++/// Script fallback faces sit on the first face's baseline; the symbol faces stay centred in their row.
++fn script_fallback_faces_sit_on_the_baseline() {
++    // Latin digits among Thai, Hebrew or CJK text sit on the first face's baseline, and the script
++    // glyphs sit where their face's fallback alignment puts them. epaint's default centres the
++    // fallback's row box, which floats the digits above the script (#502, #1265).
++    use egui::epaint::text::FallbackAlign;
++    let fonts = font_definitions_for_language(Language::En);
++    let mut checked = 0;
++    for (key, _) in fallback_faces(HanOrder::Chinese) {
++        let Some(data) = fonts.font_data.get(key) else { continue };
++        let want = if key.starts_with("sys-symbols") { FallbackAlign::Center } else { FallbackAlign::Baseline };
++        assert_eq!(data.tweak.fallback_align, want, "{key}");
++        checked += 1;
++    }
++    for (key, font) in craft_font_faces() {
++        let Some(data) = fonts.font_data.get(&key) else { continue };
++        let want = if font.scripts.contains(&"Zsym") { FallbackAlign::Center } else { FallbackAlign::Baseline };
++        assert_eq!(data.tweak.fallback_align, want, "{key}");
++        checked += 1;
++    }
++    eprintln!("checked the alignment of {checked} fallback face(s)");
++}
++
+ #[test]
+ fn language_reorders_only_the_han_faces() {
+     let keys = |han| fallback_faces(han).into_iter().map(|(k, _)| k).collect::<Vec<_>>();
